@@ -1,3 +1,4 @@
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,6 +9,8 @@
 #include <sys/select.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <string.h>
+#include <dirent.h>
 
 
 #define PORT 7890  // The port users will be connecting to
@@ -23,7 +26,6 @@ int main(void) {
     struct sockaddr_in host_addr, client_addr;  // My address information
     socklen_t sin_size;
     int recv_length=1, yes=1;
-    char request_buffer[1024];
     
     if ((server_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
         fatal("in socket");
@@ -74,14 +76,15 @@ int main(void) {
 
         if (activity < 0) {
             printf("Select failed.");
-        } else {
-            printf("Activity detected. Number of ready descriptors: %d\n", activity);
-            for (int i = 0; i <= max_sd; i++) {
-                if (FD_ISSET(i, &readFDs)) {
-                    printf("Descriptor %d is ready for reading\n", i);
-                }
-            }
-        }
+        } 
+        // else {
+        //     printf("Activity detected. Number of ready descriptors: %d\n", activity);
+        //     for (int i = 0; i <= max_sd; i++) {
+        //         if (FD_ISSET(i, &readFDs)) {
+        //             // printf("Descriptor %d is ready for reading\n", i);
+        //         }
+        //     }
+        // }
 
         if (FD_ISSET(server_fd, &readFDs)) {
             sin_size = sizeof(struct sockaddr_in);
@@ -100,7 +103,6 @@ int main(void) {
         for (i = 0; i < max_clients; i++) {
             sd = client_socket[i];
             if (FD_ISSET(sd, &readFDs)) {
-                printf("handling %d\n", sd);
                 handle_connection(sd, &client_addr);
                 client_socket[i] = 0;
             }
@@ -112,6 +114,8 @@ int main(void) {
 
 
 void handle_connection(int sockfd, struct sockaddr_in *client_addr) {
+    int recv_length, fd;
+    char request_buffer[1024];
     char response_buffer[1024];
     struct timeval tv;
 
@@ -120,9 +124,32 @@ void handle_connection(int sockfd, struct sockaddr_in *client_addr) {
         inet_ntoa(client_addr->sin_addr), ntohs(client_addr->sin_port)
     );
 
-    gettimeofday(&tv, NULL);
-    sprintf(response_buffer, "%ld:%ld\n", tv.tv_sec, tv.tv_usec);
+    send(sockfd, "Enter the name of a file to open:\n", 35, 0);
+    recv_length = recv(sockfd, &request_buffer, 1024, 0);
+
+    char* ptr = strchr(request_buffer, '\n');
+    if (ptr) {
+        if (ptr > request_buffer && *(ptr - 1) == '\r') {
+            *(ptr - 1) = '\0';
+        }
+        *ptr = '\0';
+    }
+
+    printf("Opening file: %s\n", request_buffer);
+
+    if ((fd = open(request_buffer, O_RDONLY)) < 0) {
+        fatal("opening file");
+    }
+
+    if ((read(fd, response_buffer, 1024)) < 0) {
+        fatal("reading file into buffer");
+    }
+
+    close(fd);
+
     send(sockfd, response_buffer, strlen(response_buffer), 0);
+
+    close(sockfd);
 }
 
 
