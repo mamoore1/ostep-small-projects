@@ -15,13 +15,13 @@
 #include <errno.h>
 #include <signal.h>
 
-
 #define PORT 7890  // The port users will be connecting to
 #define BUF_SIZE 1024
 
 #define IO_SIGNAL SIGUSR1 /* Signal used to notify I/O completion */
 
 struct ioRequest {
+    int socket_descriptor;
     int reqNum;
     int status;
     struct aiocb *aiocbp;
@@ -88,24 +88,27 @@ int main(void) {
 
         }
 
-        activity = select(max_sd + 1, &readFDs, NULL, NULL, NULL);
+        // Check for activity once a second
+        struct timeval timeout;
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;
+        activity = select(max_sd + 1, &readFDs, NULL, NULL, &timeout);
 
         if (activity < 0) {
             printf("Select failed.");
         } 
-        // else {
-        //     printf("Activity detected. Number of ready descriptors: %d\n", activity);
-        //     for (int i = 0; i <= max_sd; i++) {
-        //         if (FD_ISSET(i, &readFDs)) {
-        //             // printf("Descriptor %d is ready for reading\n", i);
-        //         }
-        //     }
-        // }
 
         if (FD_ISSET(server_fd, &readFDs)) {
             sin_size = sizeof(struct sockaddr_in);
             if ((new_sockfd = accept(server_fd, (struct sockaddr *)&client_addr, &sin_size)) < 0) {
                 fatal("accepting connection");
+            }
+            else {
+                printf(
+                    "server: got connection from %s port %d, with client socket %d\n",
+                    inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port), new_sockfd
+                );
+                send(new_sockfd, "Enter the name of a file to open:\n", 35, 0);
             }
         
             for (i = 0; i < max_clients; i++) {
@@ -119,18 +122,11 @@ int main(void) {
         for (i = 0; i < max_clients; i++) {
             sd = client_socket[i];
             if (FD_ISSET(sd, &readFDs)) {
-                // handle_connection(sd, &client_addr);
-
+                // This handles the read request
                 int recv_length, fd, s;
                 char request_buffer[BUF_SIZE];
                 char response_buffer[BUF_SIZE];
-                struct timeval tv;
                 
-                printf(
-                    "server: got connection from %s port %d\n",
-                    inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port)
-                );
-                send(sd, "Enter the name of a file to open:\n", 35, 0);
                 recv_length = recv(sd, &request_buffer, BUF_SIZE, 0);
                 char* ptr = strchr(request_buffer, '\n');
                 if (ptr) {
@@ -145,61 +141,84 @@ int main(void) {
                 
                 iorequest_index = request_count % max_clients;
 
+                ioList[iorequest_index].socket_descriptor = sd;
                 ioList[iorequest_index].reqNum = request_count + 1;
                 ioList[iorequest_index].status = EINPROGRESS;
                 ioList[iorequest_index].aiocbp = &aiocbList[iorequest_index];
 
-                ioList[iorequest_index].aiocbp->aio_fildes = open(request_buffer, O_RDONLY);
+                int filedes;
+                if ((filedes = open(request_buffer, O_RDONLY)) < 0)
+                    fatal("Failed to open file\n");
+
+                ioList[iorequest_index].aiocbp->aio_fildes = filedes; 
                 printf("opened %s on descriptor %d\n", request_buffer, ioList[iorequest_index].aiocbp->aio_fildes);
 
                 ioList[iorequest_index].aiocbp->aio_buf = malloc(BUF_SIZE);
+                ioList[iorequest_index].aiocbp->aio_nbytes = BUF_SIZE;
                 ioList[iorequest_index].aiocbp->aio_reqprio = 0;
                 ioList[iorequest_index].aiocbp->aio_offset = 0;
-                ioList[iorequest_index].aiocbp->aio_sigevent.sigev_notify = SIGEV_SIGNAL;
-                ioList[iorequest_index].aiocbp->aio_sigevent.sigev_signo = IO_SIGNAL;
-                ioList[iorequest_index].aiocbp->aio_sigevent.sigev_value.__sival_ptr = &ioList[iorequest_index];                
+                // ioList[iorequest_index].aiocbp->aio_sigevent.sigev_notify = SIGEV_SIGNAL;
+                // VSCode complains there's no `sival_ptr` and suggests `__sival_ptr`, but gcc says to use `sival_ptr`?
+                ioList[iorequest_index].aiocbp->aio_sigevent.sigev_value.sival_ptr = &ioList[iorequest_index];                
+                
+                // Add this back in to use a signal to handle IO finishing
+                // ioList[iorequest_index].aiocbp->aio_sigevent.sigev_signo = IO_SIGNAL;
 
                 s = aio_read(ioList[iorequest_index].aiocbp);
-                if (s == -1)
+                if (s == -1) {
                     fatal("aio_read");
+                } 
+                ioList[iorequest_index].status = EINPROGRESS;
+                request_count++;
+            }
+        }
 
+                // Check whether any of the async read requests have returned
+        // printf("Loop start\n");
+        for (int i = 0; i < max_clients; i++) {
+            if (ioList[i].status == EINPROGRESS) {
+                printf("Request %d on descriptor %d\n", ioList[i].reqNum, ioList[i].aiocbp->aio_fildes);
+                ioList[i].status = aio_error(ioList[i].aiocbp);
 
-                for (int i = 0; i < max_clients; i++) {
-                    if (ioList[i].status == EINPROGRESS) {
-                        printf("Request %d on descriptor %d\n", ioList[i].reqNum, ioList[i].aiocbp->aio_fildes);
-                        ioList[i].status = aio_error(ioList[i].aiocbp);
-
-                        switch (ioList[i].status) {
-                            case 0:
-                            printf("I/O succeeded\n");
-                            break;
-                        case EINPROGRESS:
-                            printf("In progress\n");
-                            break;
-                        case ECANCELED:
-                            printf("Canceled\n");
-                            break;
-                        default:
-                            errMsg("aio_error");
-                            break;
-                        }
-
-                        // Handle the connection
+                switch (ioList[i].status) {
+                    case 0: {
+                        printf("I/O succeeded\n");
+                        // Handle the I/O
+                        // In other words, accept the contents of the read and return the information back to the
+                        // awaiting socket
+                        send(ioList[i].socket_descriptor, (char *)ioList[i].aiocbp->aio_buf, strlen((char *) ioList[i].aiocbp->aio_buf), 0);
+                        // close(ioList[i].socket_descriptor);
+                        break;
+                    }
+                    case EINPROGRESS: {
+                        printf("In progress\n");
+                        break;
+                    }
+                    case ECANCELED: {
+                        printf("Canceled\n");
+                        break;
+                    }
+                    default: {
+                        fatal("aio_error");
+                        break;
                     }
                 }
+            } else {
+                // printf("sd: %d, %d\n", ioList[i].socket_descriptor, ioList[i].status);
+            }
+        }
+        // printf("Loop end\n\n\n");
 
                 // close(fd);
 
                 // send(sd, response_buffer, strlen(response_buffer), 0);
 
-                close(sd);
+                // close(sd);
 
-                client_socket[i] = 0;
-            }
-        }
+                // client_socket[i] = 0;
     }
     
-    return 0;
+    // return 0;
 }
 
 // This has been inlined while i figure out the async reading
