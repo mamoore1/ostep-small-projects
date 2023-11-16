@@ -98,6 +98,7 @@ int main(void) {
             printf("Select failed.");
         } 
 
+        // If there's activity on the server file descriptor, accept the incoming connection
         if (FD_ISSET(server_fd, &readFDs)) {
             sin_size = sizeof(struct sockaddr_in);
             if ((new_sockfd = accept(server_fd, (struct sockaddr *)&client_addr, &sin_size)) < 0) {
@@ -105,10 +106,35 @@ int main(void) {
             }
             else {
                 printf(
-                    "server: got connection from %s port %d, with client socket %d\n",
-                    inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port), new_sockfd
+                    "server: got connection from %s port %d\n",
+                    inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port)
                 );
-                send(new_sockfd, "Enter the name of a file to open:\n", 35, 0);
+
+                // Send a list of files
+                DIR *dp;
+                if ((dp = opendir(".")) == NULL) {
+                    fatal("opening directory");
+                }
+
+                struct dirent *d;
+                char directory_buffer[BUF_SIZE];
+                strcpy(directory_buffer, "\nAvailable files:\n");
+
+                while ((d = readdir(dp)) != NULL) {
+
+                    char *file_type = strrchr(d->d_name, '.');
+                    if (file_type != NULL) {
+                        if ((strcmp(file_type, ".txt")) == 0) {
+                            strcat(directory_buffer, d->d_name);
+                            strcat(directory_buffer, "\n");
+                        }
+                    }
+                }
+                closedir(dp);
+
+                send(new_sockfd, directory_buffer, strlen(directory_buffer), 0);
+                send(new_sockfd, "\nEnter the name of a file to open:\n", 35, 0);
+
             }
         
             for (i = 0; i < max_clients; i++) {
@@ -173,8 +199,7 @@ int main(void) {
             }
         }
 
-                // Check whether any of the async read requests have returned
-        // printf("Loop start\n");
+        // Check whether any of the async read requests have returned
         for (int i = 0; i < max_clients; i++) {
             if (ioList[i].status == EINPROGRESS) {
                 printf("Request %d on descriptor %d\n", ioList[i].reqNum, ioList[i].aiocbp->aio_fildes);
@@ -186,8 +211,16 @@ int main(void) {
                         // Handle the I/O
                         // In other words, accept the contents of the read and return the information back to the
                         // awaiting socket
-                        send(ioList[i].socket_descriptor, (char *)ioList[i].aiocbp->aio_buf, strlen((char *) ioList[i].aiocbp->aio_buf), 0);
-                        // close(ioList[i].socket_descriptor);
+
+                        // Add an extra newline to the end of the buffer for formatting purposes
+                        char output_buffer[BUF_SIZE + 1];
+                        strcpy(output_buffer, (char *) ioList[i].aiocbp->aio_buf);
+                        int output_buffer_final_index = strlen(output_buffer);
+                        output_buffer[output_buffer_final_index] = '\n';
+                        output_buffer[output_buffer_final_index + 1] = '\0';
+
+                        send(ioList[i].socket_descriptor, output_buffer, strlen(output_buffer), 0);
+                        send(new_sockfd, "Enter the name of a file to open:\n", 35, 0);
                         break;
                     }
                     case EINPROGRESS: {
@@ -203,22 +236,9 @@ int main(void) {
                         break;
                     }
                 }
-            } else {
-                // printf("sd: %d, %d\n", ioList[i].socket_descriptor, ioList[i].status);
             }
         }
-        // printf("Loop end\n\n\n");
-
-                // close(fd);
-
-                // send(sd, response_buffer, strlen(response_buffer), 0);
-
-                // close(sd);
-
-                // client_socket[i] = 0;
-    }
-    
-    // return 0;
+    }    
 }
 
 // This has been inlined while i figure out the async reading
